@@ -4,47 +4,6 @@ const now = new Date(0).toISOString();
 
 export const masterSiteRegistry: MasterSite[] = [
   {
-    id: "lynux-digital-studios",
-    name: "LYNUX Digital Studios",
-    slug: "lynux-digital-studios",
-
-    siteType: "business",
-    environment: "development",
-
-    domain: "lynuxdigitalstudios.online",
-    localUrl: null,
-
-    connectionStatus: "not-configured",
-    healthStatus: "unknown",
-
-    coreEnabled: false,
-
-    connector: {
-      status: "not-installed",
-      protocolVersion: "1.0.0",
-      connectorVersion: "0.1.0",
-      connectorId: null,
-      lastAuthenticatedAt: null,
-      lastHeartbeatAt: null,
-      credentialVersion: 1,
-    },
-
-    scan: {
-      status: "never",
-      lastScanAt: null,
-      lastSuccessfulScanAt: null,
-      detectedCapabilities: 0,
-      approvedCapabilities: 0,
-      error: null,
-    },
-
-    capabilities: [],
-
-    createdAt: now,
-    updatedAt: now,
-  },
-
-  {
     id: "bluus-isle",
     name: "Bluu's Isle",
     slug: "bluus-isle",
