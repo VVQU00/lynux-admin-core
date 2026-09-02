@@ -1,57 +1,58 @@
-import { NextRequest, NextResponse } from "next/server";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
+
+import { z } from "zod";
+
+import {
+  AdminAuthError,
+  requireMasterAdmin,
+} from "@/lib/admin/auth/require-master-admin";
 
 import {
   checkModuleSetting,
 } from "@/lib/admin/enforcement";
 
+
+const requestSchema = z.object({
+  siteId: z.string().min(1),
+  featureKey: z.string().min(1),
+  settingKey: z.string().min(1),
+});
+
+
 export async function POST(
   request: NextRequest
 ) {
   try {
+    /* =======================================================
+       REQUIRE MASTER ADMIN
+
+       Enforcement diagnostics are an Admin Core capability
+       and must not be exposed to unauthenticated callers.
+    ======================================================= */
+
+    await requireMasterAdmin();
+
+
     const body =
-      await request.json();
-
-    const siteId =
-      typeof body.siteId ===
-      "string"
-        ? body.siteId
-        : "";
-
-    const featureKey =
-      typeof body.featureKey ===
-      "string"
-        ? body.featureKey
-        : "";
-
-    const settingKey =
-      typeof body.settingKey ===
-      "string"
-        ? body.settingKey
-        : "";
-
-    if (
-      !siteId ||
-      !featureKey ||
-      !settingKey
-    ) {
-      return NextResponse.json(
-        {
-          allowed: false,
-          error:
-            "Missing required fields.",
-        },
-        {
-          status: 400,
-        }
+      requestSchema.parse(
+        await request.json()
       );
-    }
+
+
+    /* =======================================================
+       CHECK ENFORCEMENT
+    ======================================================= */
 
     const result =
       await checkModuleSetting(
-        siteId,
-        featureKey,
-        settingKey
+        body.siteId,
+        body.featureKey,
+        body.settingKey
       );
+
 
     if (!result.allowed) {
       return NextResponse.json(
@@ -66,13 +67,17 @@ export async function POST(
       );
     }
 
+
     return NextResponse.json(
       {
         allowed: true,
+
         siteId:
           result.siteId,
+
         capability:
           result.capability,
+
         setting:
           result.setting,
       },
@@ -80,15 +85,64 @@ export async function POST(
         status: 200,
       }
     );
-  } catch {
+  } catch (error) {
+    /* =======================================================
+       AUTHORIZATION ERRORS
+    ======================================================= */
+
+    if (
+      error instanceof
+      AdminAuthError
+    ) {
+      return NextResponse.json(
+        {
+          allowed: false,
+          error:
+            error.message,
+        },
+        {
+          status:
+            error.status,
+        }
+      );
+    }
+
+
+    /* =======================================================
+       VALIDATION ERRORS
+    ======================================================= */
+
+    if (
+      error instanceof
+      z.ZodError
+    ) {
+      return NextResponse.json(
+        {
+          allowed: false,
+          error:
+            "Invalid enforcement test request.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+
+    console.error(
+      "LYNUX enforcement test failed:",
+      error
+    );
+
+
     return NextResponse.json(
       {
         allowed: false,
         error:
-          "Invalid enforcement test request.",
+          "Unable to run enforcement test.",
       },
       {
-        status: 400,
+        status: 500,
       }
     );
   }

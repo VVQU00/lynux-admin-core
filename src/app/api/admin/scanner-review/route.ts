@@ -11,8 +11,8 @@ import {
 } from "@/lib/admin/auth/require-master-admin";
 
 import {
-  moduleSettingsRegistry,
-} from "@/lib/admin/module-settings";
+  updateScannerReviewDecision,
+} from "@/lib/admin/scanner/review-persistence";
 
 import {
   createSupabaseAdminClient,
@@ -20,13 +20,26 @@ import {
 
 
 const requestSchema = z.object({
-  siteId: z.string().min(1),
+  siteId: z
+    .string()
+    .min(1),
 
-  featureKey: z.string().min(1),
+  capabilityKey: z
+    .string()
+    .min(1),
 
-  settingKey: z.string().min(1),
+  decision: z.enum([
+    "pending",
+    "approved",
+    "rejected",
+  ]),
 
-  enabled: z.boolean(),
+  note: z
+    .string()
+    .trim()
+    .max(500)
+    .nullable()
+    .optional(),
 });
 
 
@@ -37,8 +50,7 @@ export async function POST(
     /* =======================================================
        REQUIRE MASTER ADMIN
 
-       Authentication happens before any privileged
-       service-role database work.
+       Do this BEFORE touching the service-role client.
     ======================================================= */
 
     const adminUser =
@@ -49,36 +61,6 @@ export async function POST(
       requestSchema.parse(
         await request.json()
       );
-
-
-    /* =======================================================
-       VERIFY MODULE SETTING DEFINITION
-    ======================================================= */
-
-    const featureSettings =
-      moduleSettingsRegistry[
-        body.featureKey
-      ] ?? [];
-
-    const definition =
-      featureSettings.find(
-        (setting) =>
-          setting.key ===
-          body.settingKey
-      );
-
-
-    if (!definition) {
-      return NextResponse.json(
-        {
-          error:
-            "Unknown module setting.",
-        },
-        {
-          status: 400,
-        }
-      );
-    }
 
 
     const supabase =
@@ -119,63 +101,69 @@ export async function POST(
 
 
     /* =======================================================
-       WRITE MODULE SETTING
+       VERIFY CANONICAL CAPABILITY
     ======================================================= */
 
     const {
-      error: settingError,
+      data: capability,
+      error: capabilityError,
     } = await supabase
-      .from("module_settings")
-      .upsert(
-        {
-          site_id:
-            body.siteId,
-
-          feature_key:
-            body.featureKey,
-
-          setting_key:
-            body.settingKey,
-
-          enabled:
-            body.enabled,
-
-          dangerous:
-            definition.danger === true,
-
-          updated_at:
-            new Date().toISOString(),
-        },
-        {
-          onConflict:
-            "site_id,feature_key,setting_key",
-        }
-      );
+      .from(
+        "capability_registry"
+      )
+      .select("key")
+      .eq(
+        "key",
+        body.capabilityKey
+      )
+      .maybeSingle();
 
 
-    if (settingError) {
-      console.error(
-        "Module setting write failed:",
-        settingError.code
-      );
-
+    if (
+      capabilityError ||
+      !capability
+    ) {
       return NextResponse.json(
         {
           error:
-            "Unable to update module setting.",
+            "Unknown capability.",
         },
         {
-          status: 500,
+          status: 400,
         }
       );
     }
 
 
     /* =======================================================
+       UPDATE REVIEW
+
+       detected ≠ approved ≠ enabled
+    ======================================================= */
+
+    await updateScannerReviewDecision(
+      supabase,
+      {
+        siteId:
+          body.siteId,
+
+        capabilityKey:
+          body.capabilityKey,
+
+        decision:
+          body.decision,
+
+        note:
+          body.note ??
+          null,
+      }
+    );
+
+
+    /* =======================================================
        AUDIT LOG
 
-       Use the authenticated master admin identity instead
-       of a hard-coded actor.
+       actor_id now uses the authenticated Supabase user id.
     ======================================================= */
 
     const {
@@ -190,29 +178,27 @@ export async function POST(
           adminUser.id,
 
         action:
-          "module-setting.toggle",
+          "scanner-review.decision",
 
         capability_key:
-          body.featureKey,
+          body.capabilityKey,
 
         target_type:
-          "module_setting",
+          "scanner_capability_review",
 
         target_id:
-          `${body.featureKey}.${body.settingKey}`,
+          body.capabilityKey,
 
         success:
           true,
 
         metadata: {
-          settingKey:
-            body.settingKey,
+          decision:
+            body.decision,
 
-          enabled:
-            body.enabled,
-
-          dangerous:
-            definition.danger === true,
+          note:
+            body.note ??
+            null,
 
           actorEmail:
             adminUser.email ??
@@ -223,7 +209,7 @@ export async function POST(
 
     if (auditError) {
       console.error(
-        "Module setting audit log failed:",
+        "Scanner review audit log failed:",
         auditError.code
       );
     }
@@ -235,18 +221,15 @@ export async function POST(
       siteId:
         body.siteId,
 
-      featureKey:
-        body.featureKey,
+      capabilityKey:
+        body.capabilityKey,
 
-      settingKey:
-        body.settingKey,
-
-      enabled:
-        body.enabled,
+      decision:
+        body.decision,
     });
   } catch (error) {
     /* =======================================================
-       AUTHORIZATION ERRORS
+       AUTH ERRORS
     ======================================================= */
 
     if (
@@ -277,7 +260,7 @@ export async function POST(
       return NextResponse.json(
         {
           error:
-            "Invalid module setting request.",
+            "Invalid scanner review request.",
         },
         {
           status: 400,
@@ -287,7 +270,7 @@ export async function POST(
 
 
     console.error(
-      "LYNUX module settings route failed:",
+      "LYNUX scanner review route failed:",
       error
     );
 
@@ -295,7 +278,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          "Unable to update module setting.",
+          "Unable to update scanner review.",
       },
       {
         status: 500,

@@ -1,270 +1,853 @@
-import { MasterDashboard } from "@/components/master-dashboard";
+import {
+  redirect,
+} from "next/navigation";
+
+import {
+  MasterDashboard,
+} from "@/components/master-dashboard";
 
 import {
   createDefaultFeatureConfig,
 } from "@/lib/admin/default-features";
 
 import {
-  getAdminImplementation,
-} from "@/lib/admin/implementation";
+  AdminAuthError,
+  requireMasterAdmin,
+} from "@/lib/admin/auth/require-master-admin";
+
+import {
+  createDefaultModuleSettings,
+} from "@/lib/admin/module-settings";
+
+import {
+  getOrCreateScannerReviewSession,
+} from "@/lib/admin/scanner/review-persistence";
+
+import {
+  scanProject,
+} from "@/lib/admin/scanner/scan-project";
 
 import type {
-  FeatureConfig,
-  MasterSite,
-} from "@/lib/admin/types";
+  ScannerReviewSession,
+} from "@/lib/admin/scanner/types";
 
 import {
   createSupabaseAdminClient,
 } from "@/lib/admin/supabase/server";
 
-export const dynamic = "force-dynamic";
+import type {
+  FeatureConfig,
+  MasterSite,
+  SiteCapability,
+  SiteConnectionStatus,
+  SiteEnvironment,
+  SiteHealthStatus,
+  SiteType,
+} from "@/lib/admin/types";
 
-type SiteFeatureState = Record<string, FeatureConfig>;
+export const dynamic =
+  "force-dynamic";
 
-type ModuleState = Record<
-  string,
-  Record<string, Record<string, boolean>>
->;
+/* =========================================================
+   DATABASE ROW TYPES
+========================================================= */
 
-export default async function Home() {
-  const implementation = getAdminImplementation();
-  const supabase = createSupabaseAdminClient();
+type SiteRow = {
+  id: string;
+  name: string;
+  slug: string;
+
+  site_type:
+    | string
+    | null;
+
+  environment:
+    | string
+    | null;
+
+  domain:
+    | string
+    | null;
+
+  local_url:
+    | string
+    | null;
+
+  connection_status:
+    | string
+    | null;
+
+  health_status:
+    | string
+    | null;
+
+  core_enabled:
+    | boolean
+    | null;
+
+  created_at:
+    | string
+    | null;
+
+  updated_at:
+    | string
+    | null;
+};
+
+type ConnectorRow = {
+  site_id: string;
+
+  status:
+    | string
+    | null;
+
+  protocol_version:
+    | string
+    | null;
+
+  connector_version:
+    | string
+    | null;
+
+  connector_id:
+    | string
+    | null;
+
+  last_authenticated_at:
+    | string
+    | null;
+
+  last_heartbeat_at:
+    | string
+    | null;
+
+  credential_version:
+    | number
+    | null;
+};
+
+type CapabilityRow = {
+  site_id: string;
+  capability_key: string;
+
+  detected:
+    | boolean
+    | null;
+
+  approved:
+    | boolean
+    | null;
+
+  enabled:
+    | boolean
+    | null;
+
+  confidence:
+    | string
+    | null;
+
+  confidence_score:
+    | number
+    | null;
+
+  detected_from:
+    | string[]
+    | null;
+
+  last_verified_at:
+    | string
+    | null;
+};
+
+type ModuleSettingRow = {
+  site_id: string;
+  feature_key: string;
+  setting_key: string;
+  enabled: boolean;
+};
+
+type SiteFeatureState =
+  Record<
+    string,
+    FeatureConfig
+  >;
+
+type ModuleState =
+  Record<
+    string,
+    Record<
+      string,
+      Record<
+        string,
+        boolean
+      >
+    >
+  >;
+
+type ScannerSessionState =
+  Record<
+    string,
+    ScannerReviewSession
+  >;
+
+/* =========================================================
+   LOCAL SCANNER PROJECT ROOTS
+
+   Scanner v1 currently operates against local source.
+
+   This mapping is temporary and will eventually be
+   replaced by connector-driven scanner execution.
+========================================================= */
+
+const scannerProjectRoots:
+  Record<
+    string,
+    string
+  > = {
+    "bluus-isle":
+      "C:\\Users\\Grimmy\\bluus-isle",
+  };
+
+/* =========================================================
+   NORMALIZERS
+========================================================= */
+
+function normalizeSiteType(
+  value:
+    | string
+    | null
+): SiteType {
+  switch (value) {
+    case "business":
+    case "commerce":
+    case "diary":
+    case "radio":
+    case "nonprofit":
+    case "portfolio":
+    case "media":
+    case "custom":
+      return value;
+
+    default:
+      return "custom";
+  }
+}
+
+function normalizeEnvironment(
+  value:
+    | string
+    | null
+): SiteEnvironment {
+  switch (value) {
+    case "development":
+    case "staging":
+    case "production":
+      return value;
+
+    default:
+      return "development";
+  }
+}
+
+function normalizeConnectionStatus(
+  value:
+    | string
+    | null
+): SiteConnectionStatus {
+  switch (value) {
+    case "not-configured":
+    case "ready":
+    case "connecting":
+    case "connected":
+    case "scanning":
+    case "degraded":
+    case "error":
+    case "suspended":
+    case "revoked":
+    case "disconnected":
+      return value;
+
+    default:
+      return "not-configured";
+  }
+}
+
+function normalizeHealthStatus(
+  value:
+    | string
+    | null
+): SiteHealthStatus {
+  switch (value) {
+    case "unknown":
+    case "healthy":
+    case "warning":
+    case "critical":
+      return value;
+
+    default:
+      return "unknown";
+  }
+}
+
+function normalizeConnectorStatus(
+  value:
+    | string
+    | null
+) {
+  switch (value) {
+    case "not-installed":
+    case "inactive":
+    case "active":
+    case "expired":
+    case "revoked":
+    case "error":
+      return value;
+
+    default:
+      return "not-installed";
+  }
+}
+
+function normalizeConfidence(
+  value:
+    | string
+    | null
+) {
+  switch (value) {
+    case "verified":
+    case "probable":
+    case "possible":
+    case "conflict":
+    case "unsupported":
+      return value;
+
+    default:
+      return "unsupported";
+  }
+}
+
+function normalizeDetectedFrom(
+  values:
+    | string[]
+    | null
+): SiteCapability["detectedFrom"] {
+  if (!values) {
+    return [];
+  }
+
+  const allowed =
+    new Set([
+      "manifest",
+      "registry",
+      "api",
+      "database",
+      "route",
+      "component",
+      "manual",
+    ]);
+
+  return values.filter(
+    (
+      value
+    ): value is
+      SiteCapability["detectedFrom"][number] =>
+      allowed.has(value)
+  );
+}
+
+/* =========================================================
+   PAGE
+========================================================= */
+
+export default async function AdminPage() {
+  try {
+    await requireMasterAdmin();
+  } catch (error) {
+    if (error instanceof AdminAuthError) {
+      redirect("/login");
+    }
+
+    throw error;
+  }
+
+  const implementation =
+    "master" as const;
+
+  const supabase =
+    createSupabaseAdminClient();
 
   /* =========================================================
-     SITES
+     LOAD ADMIN CORE DATA
   ========================================================= */
 
-  const { data: siteRows, error: siteError } = await supabase
-    .from("sites")
-    .select(`
-      id,
-      name,
-      slug,
-      site_type,
-      environment,
-      domain,
-      local_url,
-      connection_status,
-      health_status,
-      core_enabled,
-      created_at,
-      updated_at
-    `)
-    .order("created_at", {
-      ascending: true,
+  const [
+    sitesResult,
+    connectorsResult,
+    capabilitiesResult,
+    moduleSettingsResult,
+  ] =
+    await Promise.all([
+      supabase
+        .from("sites")
+        .select("*")
+        .order(
+          "created_at",
+          {
+            ascending:
+              true,
+          }
+        ),
+
+      supabase
+        .from(
+          "site_connectors"
+        )
+        .select("*"),
+
+      supabase
+        .from(
+          "site_capabilities"
+        )
+        .select("*"),
+
+      supabase
+        .from(
+          "module_settings"
+        )
+        .select("*"),
+    ]);
+
+  if (
+    sitesResult.error
+  ) {
+    throw new Error(
+      `Unable to load sites: ${sitesResult.error.message}`
+    );
+  }
+
+  if (
+    connectorsResult.error
+  ) {
+    throw new Error(
+      `Unable to load site connectors: ${connectorsResult.error.message}`
+    );
+  }
+
+  if (
+    capabilitiesResult.error
+  ) {
+    throw new Error(
+      `Unable to load site capabilities: ${capabilitiesResult.error.message}`
+    );
+  }
+
+  if (
+    moduleSettingsResult.error
+  ) {
+    throw new Error(
+      `Unable to load module settings: ${moduleSettingsResult.error.message}`
+    );
+  }
+
+  const siteRows =
+    (
+      sitesResult.data ??
+      []
+    ) as SiteRow[];
+
+  const connectorRows =
+    (
+      connectorsResult.data ??
+      []
+    ) as ConnectorRow[];
+
+  const capabilityRows =
+    (
+      capabilitiesResult.data ??
+      []
+    ) as CapabilityRow[];
+
+  const moduleSettingRows =
+    (
+      moduleSettingsResult.data ??
+      []
+    ) as ModuleSettingRow[];
+
+  /* =========================================================
+     INDEX CONNECTORS
+  ========================================================= */
+
+  const connectorBySite =
+    new Map<
+      string,
+      ConnectorRow
+    >();
+
+  for (
+    const connector
+    of connectorRows
+  ) {
+    connectorBySite.set(
+      connector.site_id,
+      connector
+    );
+  }
+
+  /* =========================================================
+     INDEX CAPABILITIES
+  ========================================================= */
+
+  const capabilitiesBySite =
+    new Map<
+      string,
+      SiteCapability[]
+    >();
+
+  for (
+    const capability
+    of capabilityRows
+  ) {
+    const current =
+      capabilitiesBySite.get(
+        capability.site_id
+      ) ?? [];
+
+    current.push({
+      key:
+        capability.capability_key,
+
+      detected:
+        capability.detected ??
+        false,
+
+      approved:
+        capability.approved ??
+        false,
+
+      enabled:
+        capability.enabled ??
+        false,
+
+      confidence:
+        normalizeConfidence(
+          capability.confidence
+        ),
+
+      confidenceScore:
+        capability.confidence_score ??
+        0,
+
+      detectedFrom:
+        normalizeDetectedFrom(
+          capability.detected_from
+        ),
+
+      lastVerifiedAt:
+        capability.last_verified_at,
     });
 
-  if (siteError) {
-    console.error(
-      "LYNUX site registry load failed:",
-      siteError.code
-    );
-
-    throw new Error(
-      "Unable to load the LYNUX Master Site Registry."
+    capabilitiesBySite.set(
+      capability.site_id,
+      current
     );
   }
 
   /* =========================================================
-     CONNECTORS
+     BUILD MASTER SITES
   ========================================================= */
 
-  const {
-    data: connectorRows,
-    error: connectorError,
-  } = await supabase
-    .from("site_connectors")
-    .select(`
-      site_id,
-      connector_id,
-      status,
-      protocol_version,
-      connector_version,
-      credential_version,
-      last_authenticated_at,
-      last_heartbeat_at
-    `);
+  const sites:
+    MasterSite[] =
+    siteRows.map(
+      (
+        row
+      ) => {
+        const connector =
+          connectorBySite.get(
+            row.id
+          );
 
-  if (connectorError) {
-    console.error(
-      "LYNUX connector registry load failed:",
-      connectorError.code
+        const capabilities =
+          capabilitiesBySite.get(
+            row.id
+          ) ?? [];
+
+        const approvedCapabilities =
+          capabilities.filter(
+            (
+              capability
+            ) =>
+              capability.approved
+          ).length;
+
+        const detectedCapabilities =
+          capabilities.filter(
+            (
+              capability
+            ) =>
+              capability.detected
+          ).length;
+
+        return {
+          id:
+            row.id,
+
+          name:
+            row.name,
+
+          slug:
+            row.slug,
+
+          siteType:
+            normalizeSiteType(
+              row.site_type
+            ),
+
+          environment:
+            normalizeEnvironment(
+              row.environment
+            ),
+
+          domain:
+            row.domain,
+
+          localUrl:
+            row.local_url,
+
+          connectionStatus:
+            normalizeConnectionStatus(
+              row.connection_status
+            ),
+
+          healthStatus:
+            normalizeHealthStatus(
+              row.health_status
+            ),
+
+          coreEnabled:
+            row.core_enabled ??
+            false,
+
+          connector: {
+            status:
+              normalizeConnectorStatus(
+                connector?.status ??
+                  null
+              ),
+
+            protocolVersion:
+              connector?.protocol_version ??
+              "1",
+
+            connectorVersion:
+              connector?.connector_version ??
+              "1",
+
+            connectorId:
+              connector?.connector_id ??
+              null,
+
+            lastAuthenticatedAt:
+              connector?.last_authenticated_at ??
+              null,
+
+            lastHeartbeatAt:
+              connector?.last_heartbeat_at ??
+              null,
+
+            credentialVersion:
+              connector?.credential_version ??
+              1,
+          },
+
+          scan: {
+            status:
+              "never",
+
+            lastScanAt:
+              null,
+
+            lastSuccessfulScanAt:
+              null,
+
+            detectedCapabilities,
+
+            approvedCapabilities,
+
+            error:
+              null,
+          },
+
+          capabilities,
+
+          createdAt:
+            row.created_at ??
+            new Date(
+              0
+            ).toISOString(),
+
+          updatedAt:
+            row.updated_at ??
+            new Date(
+              0
+            ).toISOString(),
+        };
+      }
     );
 
-    throw new Error(
-      "Unable to load the LYNUX connector registry."
-    );
+  /* =========================================================
+     INITIAL FEATURE STATE
+
+     Existing Admin Core enablement remains independent
+     from scanner review approval.
+  ========================================================= */
+
+  const initialFeatureState:
+    SiteFeatureState =
+    {};
+
+  for (
+    const site
+    of sites
+  ) {
+    const config =
+      createDefaultFeatureConfig();
+
+    for (
+      const capability
+      of site.capabilities
+    ) {
+      config[
+        capability.key
+      ] =
+        capability.enabled;
+    }
+
+    initialFeatureState[
+      site.id
+    ] =
+      config;
   }
 
   /* =========================================================
-     MAIN CAPABILITY STATES
+     INITIAL MODULE STATE
   ========================================================= */
 
-  const {
-    data: capabilityRows,
-    error: capabilityError,
-  } = await supabase
-    .from("site_capabilities")
-    .select(`
-      site_id,
-      capability_key,
-      enabled
-    `);
+  const initialModuleState:
+    ModuleState =
+    {};
 
-  if (capabilityError) {
-    console.error(
-      "LYNUX capability state load failed:",
-      capabilityError.code
-    );
-
-    throw new Error(
-      "Unable to load LYNUX capability states."
-    );
+  for (
+    const site
+    of sites
+  ) {
+    initialModuleState[
+      site.id
+    ] =
+      {};
   }
 
-  /* =========================================================
-     MODULE SUB-SETTINGS
-  ========================================================= */
-
-  const {
-    data: moduleRows,
-    error: moduleError,
-  } = await supabase
-    .from("module_settings")
-    .select(`
-      site_id,
-      feature_key,
-      setting_key,
-      enabled
-    `);
-
-  if (moduleError) {
-    console.error(
-      "LYNUX module setting load failed:",
-      moduleError.code
-    );
-
-    throw new Error(
-      "Unable to load LYNUX module settings."
-    );
-  }
-
-  /* =========================================================
-     CONNECTOR LOOKUP
-  ========================================================= */
-
-  const connectorBySite = new Map(
-    (connectorRows ?? []).map((connector) => [
-      connector.site_id,
-      connector,
-    ])
-  );
-
-  /* =========================================================
-     NORMALIZE SITES
-  ========================================================= */
-
-  const sites: MasterSite[] = (siteRows ?? []).map((row) => {
-    const connector = connectorBySite.get(row.id);
-
-    return {
-      id: row.id,
-      name: row.name,
-      slug: row.slug,
-
-      siteType: row.site_type,
-      environment: row.environment,
-
-      domain: row.domain,
-      localUrl: row.local_url,
-
-      connectionStatus: row.connection_status,
-      healthStatus: row.health_status,
-
-      coreEnabled: row.core_enabled,
-
-      connector: {
-        status: connector?.status ?? "not-installed",
-
-        protocolVersion:
-          connector?.protocol_version ?? "1.0.0",
-
-        connectorVersion:
-          connector?.connector_version ?? "0.1.0",
-
-        connectorId:
-          connector?.connector_id ?? null,
-
-        lastAuthenticatedAt:
-          connector?.last_authenticated_at ?? null,
-
-        lastHeartbeatAt:
-          connector?.last_heartbeat_at ?? null,
-
-        credentialVersion:
-          connector?.credential_version ?? 1,
-      },
-
-      scan: {
-        status: "never",
-        lastScanAt: null,
-        lastSuccessfulScanAt: null,
-        detectedCapabilities: 0,
-        approvedCapabilities: 0,
-        error: null,
-      },
-
-      capabilities: [],
-
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  });
-
-  /* =========================================================
-     FEATURE STATE
-  ========================================================= */
-
-  const initialFeatureState: SiteFeatureState =
-    Object.fromEntries(
-      sites.map((site) => {
-        const configuration =
-          createDefaultFeatureConfig();
-
-        for (const row of capabilityRows ?? []) {
-          if (row.site_id === site.id) {
-            configuration[row.capability_key] =
-              row.enabled === true;
-          }
-        }
-
-        return [
-          site.id,
-          configuration,
-        ];
-      })
-    );
-
-  /* =========================================================
-     MODULE STATE
-  ========================================================= */
-
-  const initialModuleState: ModuleState = {};
-
-  for (const row of moduleRows ?? []) {
-    if (!initialModuleState[row.site_id]) {
-      initialModuleState[row.site_id] = {};
+  for (
+    const setting
+    of moduleSettingRows
+  ) {
+    if (
+      !initialModuleState[
+        setting.site_id
+      ]
+    ) {
+      initialModuleState[
+        setting.site_id
+      ] =
+        {};
     }
 
     if (
-      !initialModuleState[row.site_id][row.feature_key]
+      !initialModuleState[
+        setting.site_id
+      ][
+        setting.feature_key
+      ]
     ) {
-      initialModuleState[row.site_id][row.feature_key] = {};
+      initialModuleState[
+        setting.site_id
+      ][
+        setting.feature_key
+      ] =
+        createDefaultModuleSettings(
+          setting.feature_key
+        );
     }
 
-    initialModuleState[row.site_id][row.feature_key][
-      row.setting_key
-    ] = row.enabled === true;
+    initialModuleState[
+      setting.site_id
+    ][
+      setting.feature_key
+    ][
+      setting.setting_key
+    ] =
+      setting.enabled;
+  }
+
+  /* =========================================================
+     SCANNER REVIEW SESSIONS
+
+     IMPORTANT:
+
+     scanProject() is read-only.
+
+     getOrCreateScannerReviewSession():
+
+     1. saves the first compatible scanner run
+     2. reuses that run on refresh
+     3. reloads APPROVED / REJECTED / PENDING decisions
+     4. never enables a capability
+
+     Scanner is still local-only for v1.
+  ========================================================= */
+
+  const initialScannerSessions:
+    ScannerSessionState =
+    {};
+
+  for (
+    const site
+    of sites
+  ) {
+    const projectRoot =
+      scannerProjectRoots[
+        site.slug
+      ];
+
+    if (!projectRoot) {
+      continue;
+    }
+
+    try {
+      const scanResult =
+        await scanProject(
+          projectRoot
+        );
+
+      const reviewSession =
+        await getOrCreateScannerReviewSession(
+          supabase,
+          site.id,
+          scanResult
+        );
+
+      initialScannerSessions[
+        site.id
+      ] =
+        reviewSession;
+    } catch (
+      error
+    ) {
+      console.error(
+        `LYNUX scanner failed for site "${site.slug}":`,
+        error
+      );
+    }
   }
 
   /* =========================================================
@@ -272,13 +855,22 @@ export default async function Home() {
   ========================================================= */
 
   return (
-    <main>
-      <MasterDashboard
-        implementation={implementation}
-        sites={sites}
-        initialFeatureState={initialFeatureState}
-        initialModuleState={initialModuleState}
-      />
-    </main>
+    <MasterDashboard
+      implementation={
+        implementation
+      }
+      sites={
+        sites
+      }
+      initialFeatureState={
+        initialFeatureState
+      }
+      initialModuleState={
+        initialModuleState
+      }
+      initialScannerSessions={
+        initialScannerSessions
+      }
+    />
   );
 }

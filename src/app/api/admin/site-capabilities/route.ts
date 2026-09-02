@@ -1,8 +1,23 @@
-import { NextRequest, NextResponse } from "next/server";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
+
 import { z } from "zod";
 
-import { featureRegistry } from "@/lib/admin/feature-registry";
-import { createSupabaseAdminClient } from "@/lib/admin/supabase/server";
+import {
+  AdminAuthError,
+  requireMasterAdmin,
+} from "@/lib/admin/auth/require-master-admin";
+
+import {
+  featureRegistry,
+} from "@/lib/admin/feature-registry";
+
+import {
+  createSupabaseAdminClient,
+} from "@/lib/admin/supabase/server";
+
 
 const requestSchema = z.object({
   siteId: z.string().min(1),
@@ -10,18 +25,42 @@ const requestSchema = z.object({
   enabled: z.boolean(),
 });
 
-export async function POST(request: NextRequest) {
-  try {
-    const body = requestSchema.parse(await request.json());
 
-    const definition = featureRegistry.find(
-      (feature) => feature.key === body.featureKey
-    );
+export async function POST(
+  request: NextRequest
+) {
+  try {
+    /* =======================================================
+       REQUIRE MASTER ADMIN
+    ======================================================= */
+
+    const adminUser =
+      await requireMasterAdmin();
+
+
+    const body =
+      requestSchema.parse(
+        await request.json()
+      );
+
+
+    /* =======================================================
+       VERIFY CAPABILITY DEFINITION
+    ======================================================= */
+
+    const definition =
+      featureRegistry.find(
+        (feature) =>
+          feature.key ===
+          body.featureKey
+      );
+
 
     if (!definition) {
       return NextResponse.json(
         {
-          error: "Unknown capability.",
+          error:
+            "Unknown capability.",
         },
         {
           status: 400,
@@ -29,18 +68,36 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const supabase = createSupabaseAdminClient();
 
-    const { data: site, error: siteError } = await supabase
+    const supabase =
+      createSupabaseAdminClient();
+
+
+    /* =======================================================
+       VERIFY SITE
+    ======================================================= */
+
+    const {
+      data: site,
+      error: siteError,
+    } = await supabase
       .from("sites")
       .select("id")
-      .eq("id", body.siteId)
+      .eq(
+        "id",
+        body.siteId
+      )
       .maybeSingle();
 
-    if (siteError || !site) {
+
+    if (
+      siteError ||
+      !site
+    ) {
       return NextResponse.json(
         {
-          error: "Site not found.",
+          error:
+            "Site not found.",
         },
         {
           status: 404,
@@ -48,72 +105,48 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { error: registryError } = await supabase
-      .from("capability_registry")
-      .upsert(
-        {
-          key: definition.key,
-          label: definition.label,
-          description: definition.description,
-          category: definition.category,
-          dangerous: false,
-          master_only: definition.masterOnly === true,
-          updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: "key",
-        }
-      );
 
-    if (registryError) {
-      console.error(
-        "Capability registry write failed:",
-        registryError.code
-      );
+    /* =======================================================
+       UPDATE ENABLEMENT ONLY
 
-      return NextResponse.json(
-        {
-          error: "Unable to register capability.",
-        },
-        {
-          status: 500,
-        }
-      );
-    }
+       IMPORTANT:
 
-    const { error: capabilityError } = await supabase
+       detected ≠ approved ≠ enabled
+
+       This endpoint controls enabled state.
+
+       It does NOT alter scanner detection or approval.
+    ======================================================= */
+
+    const {
+      data: existingCapability,
+      error: existingError,
+    } = await supabase
       .from("site_capabilities")
-      .upsert(
-        {
-          site_id: body.siteId,
-          capability_key: body.featureKey,
+      .select(
+        "site_id, capability_key"
+      )
+      .eq(
+        "site_id",
+        body.siteId
+      )
+      .eq(
+        "capability_key",
+        body.featureKey
+      )
+      .maybeSingle();
 
-          detected: true,
-          approved: true,
-          enabled: body.enabled,
 
-          confidence: "verified",
-          confidence_score: 100,
-
-          detected_from: ["registry"],
-
-          last_verified_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: "site_id,capability_key",
-        }
-      );
-
-    if (capabilityError) {
+    if (existingError) {
       console.error(
-        "Site capability write failed:",
-        capabilityError.code
+        "Capability lookup failed:",
+        existingError.code
       );
 
       return NextResponse.json(
         {
-          error: "Unable to update capability.",
+          error:
+            "Unable to read capability state.",
         },
         {
           status: 500,
@@ -121,34 +154,214 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    await supabase.from("audit_logs").insert({
-      site_id: body.siteId,
-      actor_id: "master",
-      action: "capability.toggle",
-      capability_key: body.featureKey,
-      target_type: "site_capability",
-      target_id: body.featureKey,
-      success: true,
-      metadata: {
-        enabled: body.enabled,
-      },
-    });
+
+    if (existingCapability) {
+      const {
+        error: updateError,
+      } = await supabase
+        .from(
+          "site_capabilities"
+        )
+        .update({
+          enabled:
+            body.enabled,
+
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq(
+          "site_id",
+          body.siteId
+        )
+        .eq(
+          "capability_key",
+          body.featureKey
+        );
+
+
+      if (updateError) {
+        console.error(
+          "Capability update failed:",
+          updateError.code
+        );
+
+        return NextResponse.json(
+          {
+            error:
+              "Unable to update capability.",
+          },
+          {
+            status: 500,
+          }
+        );
+      }
+    } else {
+      const {
+        error: insertError,
+      } = await supabase
+        .from(
+          "site_capabilities"
+        )
+        .insert({
+          site_id:
+            body.siteId,
+
+          capability_key:
+            body.featureKey,
+
+          detected:
+            false,
+
+          approved:
+            false,
+
+          enabled:
+            body.enabled,
+
+          confidence:
+            "unsupported",
+
+          confidence_score:
+            0,
+
+          detected_from:
+            [],
+
+          last_verified_at:
+            null,
+
+          updated_at:
+            new Date().toISOString(),
+        });
+
+
+      if (insertError) {
+        console.error(
+          "Capability insert failed:",
+          insertError.code
+        );
+
+        return NextResponse.json(
+          {
+            error:
+              "Unable to create capability state.",
+          },
+          {
+            status: 500,
+          }
+        );
+      }
+    }
+
+
+    /* =======================================================
+       AUDIT
+    ======================================================= */
+
+    const {
+      error: auditError,
+    } = await supabase
+      .from("audit_logs")
+      .insert({
+        site_id:
+          body.siteId,
+
+        actor_id:
+          adminUser.id,
+
+        action:
+          "capability.toggle",
+
+        capability_key:
+          body.featureKey,
+
+        target_type:
+          "site_capability",
+
+        target_id:
+          body.featureKey,
+
+        success:
+          true,
+
+        metadata: {
+          enabled:
+            body.enabled,
+
+          actorEmail:
+            adminUser.email ??
+            null,
+        },
+      });
+
+
+    if (auditError) {
+      console.error(
+        "Capability audit log failed:",
+        auditError.code
+      );
+    }
+
 
     return NextResponse.json({
       ok: true,
-      siteId: body.siteId,
-      featureKey: body.featureKey,
-      enabled: body.enabled,
+
+      siteId:
+        body.siteId,
+
+      featureKey:
+        body.featureKey,
+
+      enabled:
+        body.enabled,
     });
   } catch (error) {
-    console.error("Capability API rejected request.");
+    if (
+      error instanceof
+      AdminAuthError
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            error.message,
+        },
+        {
+          status:
+            error.status,
+        }
+      );
+    }
+
+
+    if (
+      error instanceof
+      z.ZodError
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Invalid capability request.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+
+    console.error(
+      "LYNUX capability route failed:",
+      error
+    );
+
 
     return NextResponse.json(
       {
-        error: "Invalid capability request.",
+        error:
+          "Unable to update capability.",
       },
       {
-        status: 400,
+        status: 500,
       }
     );
   }

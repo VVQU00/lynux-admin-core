@@ -6,6 +6,14 @@ import {
 } from "react";
 
 import {
+  signOutMasterAdmin,
+} from "@/lib/admin/auth/actions";
+
+import {
+  ScannerReviewPanel,
+} from "@/components/scanner-review-panel";
+
+import {
   featureRegistry,
 } from "@/lib/admin/feature-registry";
 
@@ -17,6 +25,10 @@ import {
   createDefaultModuleSettings,
   moduleSettingsRegistry,
 } from "@/lib/admin/module-settings";
+
+import type {
+  ScannerReviewSession,
+} from "@/lib/admin/scanner/types";
 
 import type {
   AdminImplementation,
@@ -53,6 +65,12 @@ type ModuleState =
     >
   >;
 
+type ScannerSessionState =
+  Record<
+    string,
+    ScannerReviewSession
+  >;
+
 type SaveState =
   | "idle"
   | "saving"
@@ -64,11 +82,13 @@ export function MasterDashboard({
   sites,
   initialFeatureState,
   initialModuleState,
+  initialScannerSessions = {},
 }: {
   implementation: AdminImplementation;
   sites: MasterSite[];
   initialFeatureState: SiteFeatureState;
   initialModuleState: ModuleState;
+  initialScannerSessions?: ScannerSessionState;
 }) {
   const [
     selectedSiteId,
@@ -127,9 +147,18 @@ export function MasterDashboard({
         site.id === selectedSiteId
     ) ?? null;
 
+  const selectedScannerSession =
+    selectedSiteId
+      ? initialScannerSessions[
+          selectedSiteId
+        ] ?? null
+      : null;
+
   const features =
     selectedSiteId
-      ? siteFeatureState[selectedSiteId] ??
+      ? siteFeatureState[
+          selectedSiteId
+        ] ??
         createDefaultFeatureConfig()
       : createDefaultFeatureConfig();
 
@@ -137,55 +166,62 @@ export function MasterDashboard({
      REGISTRY
   ========================================================= */
 
-  const visibleRegistry = useMemo(
-    () =>
-      featureRegistry.filter(
-        (feature) =>
-          !(
-            feature.masterOnly &&
-            implementation !== "master"
-          )
-      ),
-    [implementation]
-  );
+  const visibleRegistry =
+    useMemo(
+      () =>
+        featureRegistry.filter(
+          (feature) =>
+            !(
+              feature.masterOnly &&
+              implementation !==
+                "master"
+            )
+        ),
+      [implementation]
+    );
 
-  const filteredRegistry = useMemo(() => {
-    const q = query
-      .trim()
-      .toLowerCase();
+  const filteredRegistry =
+    useMemo(() => {
+      const q =
+        query
+          .trim()
+          .toLowerCase();
 
-    if (!q) {
+      if (!q) {
+        return visibleRegistry.filter(
+          (feature) =>
+            feature.category ===
+            activeCategory
+        );
+      }
+
       return visibleRegistry.filter(
         (feature) =>
-          feature.category === activeCategory
+          feature.label
+            .toLowerCase()
+            .includes(q) ||
+          feature.description
+            .toLowerCase()
+            .includes(q) ||
+          feature.category
+            .toLowerCase()
+            .includes(q) ||
+          feature.key
+            .toLowerCase()
+            .includes(q)
       );
-    }
-
-    return visibleRegistry.filter(
-      (feature) =>
-        feature.label
-          .toLowerCase()
-          .includes(q) ||
-        feature.description
-          .toLowerCase()
-          .includes(q) ||
-        feature.category
-          .toLowerCase()
-          .includes(q) ||
-        feature.key
-          .toLowerCase()
-          .includes(q)
-    );
-  }, [
-    query,
-    visibleRegistry,
-    activeCategory,
-  ]);
+    }, [
+      query,
+      visibleRegistry,
+      activeCategory,
+    ]);
 
   const enabledCount =
     visibleRegistry.filter(
       (feature) =>
-        features[feature.key]
+        features[
+          feature.key
+        ]
     ).length;
 
   /* =========================================================
@@ -196,7 +232,8 @@ export function MasterDashboard({
     selectedFeatureKey
       ? visibleRegistry.find(
           (feature) =>
-            feature.key === selectedFeatureKey
+            feature.key ===
+            selectedFeatureKey
         ) ?? null
       : null;
 
@@ -214,11 +251,23 @@ export function MasterDashboard({
   function selectSite(
     siteId: string
   ) {
-    setSelectedSiteId(siteId);
-    setSelectedFeatureKey(null);
+    setSelectedSiteId(
+      siteId
+    );
+
+    setSelectedFeatureKey(
+      null
+    );
+
     setQuery("");
-    setActiveCategory("Core Website");
-    setSaveState("idle");
+
+    setActiveCategory(
+      "Core Website"
+    );
+
+    setSaveState(
+      "idle"
+    );
   }
 
   /* =========================================================
@@ -233,11 +282,15 @@ export function MasterDashboard({
     }
 
     const currentSiteState =
-      siteFeatureState[selectedSiteId] ??
+      siteFeatureState[
+        selectedSiteId
+      ] ??
       createDefaultFeatureConfig();
 
     const previousValue =
-      currentSiteState[featureKey] === true;
+      currentSiteState[
+        featureKey
+      ] === true;
 
     const nextValue =
       !previousValue;
@@ -248,7 +301,9 @@ export function MasterDashboard({
 
         [selectedSiteId]: {
           ...(
-            current[selectedSiteId] ??
+            current[
+              selectedSiteId
+            ] ??
             createDefaultFeatureConfig()
           ),
 
@@ -258,36 +313,45 @@ export function MasterDashboard({
       })
     );
 
-    setSaveState("saving");
+    setSaveState(
+      "saving"
+    );
 
     try {
-      const response = await fetch(
-        "/api/admin/site-capabilities",
-        {
-          method: "POST",
+      const response =
+        await fetch(
+          "/api/admin/site-capabilities",
+          {
+            method:
+              "POST",
 
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
 
-          body: JSON.stringify({
-            siteId:
-              selectedSiteId,
+            body:
+              JSON.stringify({
+                siteId:
+                  selectedSiteId,
 
-            featureKey,
+                featureKey,
 
-            enabled:
-              nextValue,
-          }),
-        }
-      );
+                enabled:
+                  nextValue,
+              }),
+          }
+        );
 
-      if (!response.ok) {
+      if (
+        !response.ok
+      ) {
         throw new Error();
       }
 
-      setSaveState("saved");
+      setSaveState(
+        "saved"
+      );
     } catch {
       setSiteFeatureState(
         (current) => ({
@@ -295,7 +359,9 @@ export function MasterDashboard({
 
           [selectedSiteId]: {
             ...(
-              current[selectedSiteId] ??
+              current[
+                selectedSiteId
+              ] ??
               createDefaultFeatureConfig()
             ),
 
@@ -305,7 +371,9 @@ export function MasterDashboard({
         })
       );
 
-      setSaveState("error");
+      setSaveState(
+        "error"
+      );
     }
   }
 
@@ -320,7 +388,9 @@ export function MasterDashboard({
       return;
     }
 
-    setSelectedFeatureKey(key);
+    setSelectedFeatureKey(
+      key
+    );
   }
 
   /* =========================================================
@@ -357,8 +427,9 @@ export function MasterDashboard({
       );
 
     return (
-      defaults[settingKey] ===
-      true
+      defaults[
+        settingKey
+      ] === true
     );
   }
 
@@ -410,38 +481,47 @@ export function MasterDashboard({
       })
     );
 
-    setSaveState("saving");
+    setSaveState(
+      "saving"
+    );
 
     try {
-      const response = await fetch(
-        "/api/admin/module-settings",
-        {
-          method: "POST",
+      const response =
+        await fetch(
+          "/api/admin/module-settings",
+          {
+            method:
+              "POST",
 
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
 
-          body: JSON.stringify({
-            siteId:
-              selectedSiteId,
+            body:
+              JSON.stringify({
+                siteId:
+                  selectedSiteId,
 
-            featureKey,
+                featureKey,
 
-            settingKey,
+                settingKey,
 
-            enabled:
-              nextValue,
-          }),
-        }
-      );
+                enabled:
+                  nextValue,
+              }),
+          }
+        );
 
-      if (!response.ok) {
+      if (
+        !response.ok
+      ) {
         throw new Error();
       }
 
-      setSaveState("saved");
+      setSaveState(
+        "saved"
+      );
     } catch {
       setModuleState(
         (current) => ({
@@ -470,7 +550,9 @@ export function MasterDashboard({
         })
       );
 
-      setSaveState("error");
+      setSaveState(
+        "error"
+      );
     }
   }
 
@@ -509,7 +591,9 @@ export function MasterDashboard({
 
               return (
                 <button
-                  key={category}
+                  key={
+                    category
+                  }
                   className={`navItem ${
                     activeCategory ===
                     category
@@ -551,11 +635,33 @@ export function MasterDashboard({
             </h2>
           </div>
 
-          <div className="mode">
-            implementation /{" "}
-            <strong>
-              {implementation}
-            </strong>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+            }}
+          >
+            <div className="mode">
+              implementation /{" "}
+              <strong>
+                {implementation}
+              </strong>
+            </div>
+
+            <form action={signOutMasterAdmin}>
+              <button
+                type="submit"
+                className="mode"
+                style={{
+                  cursor: "pointer",
+                  background: "transparent",
+                  font: "inherit",
+                }}
+              >
+                SIGN OUT
+              </button>
+            </form>
           </div>
         </header>
 
@@ -601,7 +707,9 @@ export function MasterDashboard({
 
                 return (
                   <div
-                    key={site.id}
+                    key={
+                      site.id
+                    }
                     className={`featureRow featureRowClickable ${
                       isSelected
                         ? "active"
@@ -618,16 +726,25 @@ export function MasterDashboard({
                       }
                     >
                       <span className="featureName">
-                        {site.name}
+                        {
+                          site.name
+                        }
                       </span>
 
                       <span className="featureDesc">
-                        {site.siteType} /{" "}
-                        {site.environment}
+                        {
+                          site.siteType
+                        }{" "}
+                        /{" "}
+                        {
+                          site.environment
+                        }
                       </span>
 
                       <span className="featureMeta">
-                        {siteEnabledCount}{" "}
+                        {
+                          siteEnabledCount
+                        }{" "}
                         enabled controls
                       </span>
 
@@ -674,7 +791,9 @@ export function MasterDashboard({
                   </div>
 
                   <div className="metricValue smallMetric">
-                    {selectedSite.name}
+                    {
+                      selectedSite.name
+                    }
                   </div>
                 </div>
 
@@ -684,7 +803,9 @@ export function MasterDashboard({
                   </div>
 
                   <div className="metricValue">
-                    {enabledCount}
+                    {
+                      enabledCount
+                    }
                   </div>
                 </div>
 
@@ -694,8 +815,10 @@ export function MasterDashboard({
                   </div>
 
                   <div className="metricValue">
-                    {visibleRegistry.length -
-                      enabledCount}
+                    {
+                      visibleRegistry.length -
+                      enabledCount
+                    }
                   </div>
                 </div>
 
@@ -716,16 +839,30 @@ export function MasterDashboard({
                 </div>
               </div>
 
+              <ScannerReviewPanel
+                siteId={
+                  selectedSite.id
+                }
+                session={
+                  selectedScannerSession
+                }
+              />
+
               <div className="searchStrip">
                 <span className="searchLabel">
                   SEARCH /
                 </span>
 
                 <input
-                  value={query}
-                  onChange={(event) =>
+                  value={
+                    query
+                  }
+                  onChange={(
+                    event
+                  ) =>
                     setQuery(
-                      event.target.value
+                      event.target
+                        .value
                     )
                   }
                   placeholder="products, security, pages, orders..."
@@ -746,7 +883,9 @@ export function MasterDashboard({
               <div className="sectionHeader">
                 <div>
                   <p className="eyebrow">
-                    {selectedSite.name}
+                    {
+                      selectedSite.name
+                    }
                   </p>
 
                   <h3>
@@ -841,9 +980,10 @@ export function MasterDashboard({
               </div>
 
               <div className="notice">
-                Main capability switches
-                and module sub-controls
-                now persist independently
+                Main capability
+                switches and module
+                sub-controls now
+                persist independently
                 for each website.
               </div>
             </>
@@ -863,14 +1003,18 @@ export function MasterDashboard({
           >
             <aside
               className="drawer"
-              onClick={(event) =>
+              onClick={(
+                event
+              ) =>
                 event.stopPropagation()
               }
             >
               <div className="drawerTop">
                 <div>
                   <p className="eyebrow">
-                    {selectedSite.name}
+                    {
+                      selectedSite.name
+                    }
                   </p>
 
                   <h3>
@@ -938,7 +1082,9 @@ export function MasterDashboard({
                 <div className="disabledBanner">
                   This module is
                   disabled for{" "}
-                  {selectedSite.name}.
+                  {
+                    selectedSite.name
+                  }.
                   Its sub-settings stay
                   saved, but they must
                   not grant access while
@@ -948,7 +1094,8 @@ export function MasterDashboard({
               )}
 
               <div className="drawerSectionLabel">
-                MODULE / SUB-CONTROLS
+                MODULE /
+                SUB-CONTROLS
               </div>
 
               {selectedSettings.length ? (
