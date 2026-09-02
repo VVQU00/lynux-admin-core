@@ -24,6 +24,10 @@ import {
 } from "@/lib/admin/scanner/review-persistence";
 
 import {
+  getScannerProjectRoot,
+} from "@/lib/admin/scanner/project-roots";
+
+import {
   scanProject,
 } from "@/lib/admin/scanner/scan-project";
 
@@ -189,24 +193,6 @@ type ScannerSessionState =
     string,
     ScannerReviewSession
   >;
-
-/* =========================================================
-   LOCAL SCANNER PROJECT ROOTS
-
-   Scanner v1 currently operates against local source.
-
-   This mapping is temporary and will eventually be
-   replaced by connector-driven scanner execution.
-========================================================= */
-
-const scannerProjectRoots:
-  Record<
-    string,
-    string
-  > = {
-    "bluus-isle":
-      "C:\\Users\\Grimmy\\bluus-isle",
-  };
 
 /* =========================================================
    NORMALIZERS
@@ -815,9 +801,9 @@ export default async function AdminPage() {
     of sites
   ) {
     const projectRoot =
-      scannerProjectRoots[
+      getScannerProjectRoot(
         site.slug
-      ];
+      );
 
     if (!projectRoot) {
       continue;
