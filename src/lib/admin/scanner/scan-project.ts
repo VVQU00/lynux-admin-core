@@ -1,8 +1,16 @@
 import path from "node:path";
 
-import { discoverSourceFiles } from "./source-files";
-import { detectProjectSignals } from "./signal-detector";
-import { matchCapabilities } from "./capability-matcher";
+import {
+  discoverSourceFiles,
+} from "./source-files";
+
+import {
+  detectProjectSignals,
+} from "./signal-detector";
+
+import {
+  matchCapabilities,
+} from "./capability-matcher";
 
 import type {
   ScannerBackend,
@@ -16,24 +24,25 @@ import type {
    LYNUX SCANNER V1 — PROJECT ORCHESTRATOR
 
    Purpose:
-   Run the complete Scanner v1 discovery pipeline.
 
-   Flow:
+   Run the Scanner discovery pipeline from either:
 
-   project root
-      ↓
-   recursive source discovery
-      ↓
-   raw signal detection
-      ↓
-   framework/backend detection
-      ↓
-   canonical capability matching
-      ↓
-   ScannerResult
+   1. A local project root
+   2. A pre-discovered set of safe source files
+
+   This keeps source acquisition separate from scanner
+   intelligence.
 
    IMPORTANT:
-   This remains read-only and proposal-only.
+
+   The scanner remains:
+
+   - read-only
+   - proposal-only
+   - unable to approve capabilities
+   - unable to enable capabilities
+
+   detected !== approved !== enabled
 ========================================================= */
 
 /* =========================================================
@@ -71,7 +80,10 @@ function detectFramework(
     }
   }
 
-  if (hasAppRouter && hasPagesRouter) {
+  if (
+    hasAppRouter &&
+    hasPagesRouter
+  ) {
     return "nextjs-hybrid";
   }
 
@@ -97,7 +109,9 @@ function detectBackends(
     new Set<ScannerBackend>();
 
   for (const file of files) {
-    const content = file.content;
+    const content =
+      file.content;
+
     const relativePath =
       file.relativePath.toLowerCase();
 
@@ -105,7 +119,9 @@ function detectBackends(
       content.includes("@supabase/") ||
       content.includes(".from(") ||
       content.includes("createClient(") ||
-      content.includes("createServerClient(")
+      content.includes(
+        "createServerClient("
+      )
     ) {
       detected.add("supabase");
     }
@@ -155,36 +171,39 @@ function getProjectName(
 function convertDiscoveryWarnings(
   warnings: string[]
 ): ScannerWarning[] {
-  return warnings.map((message) => {
-    let code: ScannerWarning["code"] =
-      "parser-warning";
+  return warnings.map(
+    (message) => {
+      let code:
+        ScannerWarning["code"] =
+          "parser-warning";
 
-    if (
-      message.includes(
-        "file limit"
-      )
-    ) {
-      code = "scan-limit";
-    } else if (
-      message.includes(
-        "Unable to read source file"
-      )
-    ) {
-      code = "unreadable-file";
-    } else if (
-      message.includes(
-        "oversized source file"
-      )
-    ) {
-      code = "unsupported-file";
+      if (
+        message.includes(
+          "file limit"
+        )
+      ) {
+        code = "scan-limit";
+      } else if (
+        message.includes(
+          "Unable to read source file"
+        )
+      ) {
+        code = "unreadable-file";
+      } else if (
+        message.includes(
+          "oversized source file"
+        )
+      ) {
+        code = "unsupported-file";
+      }
+
+      return {
+        code,
+        message,
+        filePath: null,
+      };
     }
-
-    return {
-      code,
-      message,
-      filePath: null,
-    };
-  });
+  );
 }
 
 /* =========================================================
@@ -196,8 +215,8 @@ function createProposalWarnings(
     typeof matchCapabilities
   >
 ): ScannerWarning[] {
-  const warnings: ScannerWarning[] =
-    [];
+  const warnings:
+    ScannerWarning[] = [];
 
   for (const proposal of result) {
     if (
@@ -205,7 +224,8 @@ function createProposalWarnings(
       "conflict"
     ) {
       warnings.push({
-        code: "conflicting-capability",
+        code:
+          "conflicting-capability",
 
         message:
           `Scanner found conflicting evidence for capability "${proposal.capabilityKey}". Manual review is required.`,
@@ -223,7 +243,8 @@ function createProposalWarnings(
       "possible"
     ) {
       warnings.push({
-        code: "ambiguous-capability",
+        code:
+          "ambiguous-capability",
 
         message:
           `Scanner found low-confidence evidence for capability "${proposal.capabilityKey}".`,
@@ -239,23 +260,137 @@ function createProposalWarnings(
 }
 
 /* =========================================================
-   SCAN OPTIONS
+   LOCAL SCAN OPTIONS
 ========================================================= */
 
 export type ScanProjectOptions = {
   maxFileSizeBytes?: number;
-
   maxFiles?: number;
-
   includeExtensions?: string[];
-
   ignoreDirectories?: string[];
-
   ignoreFiles?: string[];
 };
 
 /* =========================================================
-   MAIN SCANNER
+   GENERIC SOURCE INPUT
+
+   This is the important separation.
+
+   Scanner intelligence consumes ScannerSourceFile[].
+
+   It does not care whether those files came from:
+
+   - local disk
+   - a universal connector
+   - a repository provider
+   - another future source provider
+========================================================= */
+
+export type ScanSourceFilesInput = {
+  projectRoot: string;
+  projectName: string;
+
+  files: ScannerSourceFile[];
+
+  filesIgnored?: number;
+
+  discoveryWarnings?: string[];
+
+  scannedAt?: string;
+};
+
+/* =========================================================
+   GENERIC SCANNER
+
+   All actual discovery intelligence begins here.
+
+   This function does NOT touch the filesystem.
+========================================================= */
+
+export function scanSourceFiles(
+  input: ScanSourceFilesInput
+): ScannerResult {
+  const signals =
+    detectProjectSignals(
+      input.files
+    );
+
+  const proposals =
+    matchCapabilities(
+      signals
+    );
+
+  const framework =
+    detectFramework(
+      input.files
+    );
+
+  const backends =
+    detectBackends(
+      input.files
+    );
+
+  const warnings:
+    ScannerWarning[] = [
+      ...convertDiscoveryWarnings(
+        input.discoveryWarnings ??
+          []
+      ),
+
+      ...createProposalWarnings(
+        proposals
+      ),
+    ];
+
+  return {
+    scannerVersion: "1",
+
+    project: {
+      projectRoot:
+        input.projectRoot,
+
+      projectName:
+        input.projectName,
+
+      framework,
+
+      backends,
+
+      scannedAt:
+        input.scannedAt ??
+        new Date().toISOString(),
+
+      filesExamined:
+        input.files.length,
+
+      filesIgnored:
+        input.filesIgnored ?? 0,
+
+      signalsDetected:
+        signals.length,
+    },
+
+    signals,
+
+    proposals,
+
+    warnings,
+  };
+}
+
+/* =========================================================
+   LOCAL FILESYSTEM ADAPTER
+
+   Existing Scanner v1 behavior remains intact.
+
+   Local project root
+       ↓
+   discover source files
+       ↓
+   scanSourceFiles()
+
+   Later, the universal connector can provide the same
+   ScannerSourceFile[] input without changing the scanner.
 ========================================================= */
 
 export async function scanProject(
@@ -286,67 +421,22 @@ export async function scanProject(
       }
     );
 
-  const signals =
-    detectProjectSignals(
-      discovery.files
-    );
+  return scanSourceFiles({
+    projectRoot:
+      resolvedRoot,
 
-  const proposals =
-    matchCapabilities(signals);
+    projectName:
+      getProjectName(
+        resolvedRoot
+      ),
 
-  const framework =
-    detectFramework(
-      discovery.files
-    );
+    files:
+      discovery.files,
 
-  const backends =
-    detectBackends(
-      discovery.files
-    );
+    filesIgnored:
+      discovery.ignoredFiles,
 
-  const warnings: ScannerWarning[] = [
-    ...convertDiscoveryWarnings(
-      discovery.warnings
-    ),
-
-    ...createProposalWarnings(
-      proposals
-    ),
-  ];
-
-  return {
-    scannerVersion: "1",
-
-    project: {
-      projectRoot:
-        resolvedRoot,
-
-      projectName:
-        getProjectName(
-          resolvedRoot
-        ),
-
-      framework,
-
-      backends,
-
-      scannedAt:
-        new Date().toISOString(),
-
-      filesExamined:
-        discovery.files.length,
-
-      filesIgnored:
-        discovery.ignoredFiles,
-
-      signalsDetected:
-        signals.length,
-    },
-
-    signals,
-
-    proposals,
-
-    warnings,
-  };
+    discoveryWarnings:
+      discovery.warnings,
+  });
 }
