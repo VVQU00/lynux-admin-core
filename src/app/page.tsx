@@ -24,11 +24,11 @@ import {
 } from "@/lib/admin/scanner/review-persistence";
 
 import {
-  getScannerProjectRoot,
-} from "@/lib/admin/scanner/project-roots";
+  loadGithubScannerSource,
+} from "@/lib/admin/scanner/github-source";
 
 import {
-  scanProject,
+  scanSourceFiles,
 } from "@/lib/admin/scanner/scan-project";
 
 import type {
@@ -780,16 +780,24 @@ export default async function AdminPage() {
 
      IMPORTANT:
 
-     scanProject() is read-only.
+     Source acquisition now happens centrally through each
+     site's registered GitHub repository.
 
-     getOrCreateScannerReviewSession():
+     Flow:
 
-     1. saves the first compatible scanner run
-     2. reuses that run on refresh
-     3. reloads APPROVED / REJECTED / PENDING decisions
-     4. never enables a capability
+     site_sources
+        ↓
+     private GitHub repository
+        ↓
+     loadGithubScannerSource()
+        ↓
+     scanSourceFiles()
+        ↓
+     getOrCreateScannerReviewSession()
 
-     Scanner is still local-only for v1.
+     Scanner remains read-only and proposal-only.
+
+     detected ≠ approved ≠ enabled
   ========================================================= */
 
   const initialScannerSessions:
@@ -800,20 +808,29 @@ export default async function AdminPage() {
     const site
     of sites
   ) {
-    const projectRoot =
-      getScannerProjectRoot(
-        site.slug
-      );
-
-    if (!projectRoot) {
-      continue;
-    }
-
     try {
-      const scanResult =
-        await scanProject(
-          projectRoot
+      const source =
+        await loadGithubScannerSource(
+          site.id
         );
+
+      const scanResult =
+        scanSourceFiles({
+          projectRoot:
+            source.projectRoot,
+
+          projectName:
+            source.projectName,
+
+          files:
+            source.files,
+
+          filesIgnored:
+            source.ignoredFiles,
+
+          discoveryWarnings:
+            source.warnings,
+        });
 
       const reviewSession =
         await getOrCreateScannerReviewSession(
@@ -830,7 +847,7 @@ export default async function AdminPage() {
       error
     ) {
       console.error(
-        `LYNUX scanner failed for site "${site.slug}":`,
+        `LYNUX GitHub scanner failed for site "${site.slug}":`,
         error
       );
     }
